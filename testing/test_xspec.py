@@ -211,7 +211,7 @@ class TestMakegateway:
         if ",default,state,shutoff\n" in res:
             pytest.xfail("vm shutoff, run `vagrant up` first")
         if ",default,state,not_created\n" in res:
-            pytest.xfail("vm not creaeted, run `vagrant up` first")
+            pytest.xfail("vm not created, run `vagrant up` first")
         if ",default,state,running\n" not in res:
             pytest.fail("unknown vm state")
 
