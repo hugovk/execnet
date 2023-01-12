@@ -83,7 +83,7 @@ def getspecssh(config):
     xspecs = getgspecs(config)
     for spec in xspecs:
         if spec.ssh:
-            if not py.path.local.sysfind("ssh"):
+            if not shutil.which("ssh"):
                 pytest.skip("command not found: ssh")
             return spec
     pytest.skip("need '--gx ssh=...'")
@@ -107,12 +107,6 @@ def pytest_generate_tests(metafunc):
         else:
             gwtypes = ["popen", "socket", "ssh", "proxy"]
         metafunc.parametrize("gw", gwtypes, indirect=True)
-    elif "anypython" in metafunc.fixturenames:
-        metafunc.parametrize(
-            "anypython",
-            indirect=True,
-            argvalues=("sys.executable", "pypy3"),
-        )
 
 
 @lru_cache()
@@ -124,7 +118,7 @@ def getexecutable(name):
     return shutil.which(name)
 
 
-@pytest.fixture
+@pytest.fixture(params=("sys.executable", "pypy3"))
 def anypython(request):
     name = request.param
     executable = getexecutable(name)

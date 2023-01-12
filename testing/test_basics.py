@@ -1,9 +1,14 @@
+from __future__ import annotations
+
 import inspect
 import os
 import subprocess
 import sys
 import textwrap
+from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
+from typing import Any
 
 import execnet
 import pytest
@@ -28,14 +33,14 @@ class TestSerializeAPI:
         val2 = execnet.loads(dumped)
         assert val == val2
 
-    def test_mmap(self, tmpdir, val):
+    def test_mmap(self, tmp_path, val):
         mmap = pytest.importorskip("mmap").mmap
-        p = tmpdir.join("data")
-        with p.open("wb") as f:
-            f.write(execnet.dumps(val))
-        f = p.open("r+b")
-        m = mmap(f.fileno(), 0)
-        val2 = execnet.load(m)
+        p = tmp_path / "data.bin"
+
+        p.write_bytes(execnet.dumps(val))
+        with p.open("r+b") as f:
+            m = mmap(f.fileno(), 0)
+            val2 = execnet.load(m)
         assert val == val2
 
     def test_bytesio(self, val):
@@ -114,6 +119,8 @@ def read_write_loop():
 
 
 IO_MESSAGE_EXTRA_SOURCE = """
+import sys
+backend = sys.argv[1]
 try:
     from io import BytesIO
 except ImportError:
@@ -121,9 +128,9 @@ except ImportError:
 import tempfile
 temp_out = BytesIO()
 temp_in = BytesIO()
-io = Popen2IO(temp_out, temp_in, get_execmodel({backend!r}))
+io = Popen2IO(temp_out, temp_in, get_execmodel(backend))
 for i, handler in enumerate(Message._types):
-    print ("checking %s %s" %(i, handler))
+    print ("checking", i, handler)
     for data in "hello", "hello".encode('ascii'):
         msg1 = Message(i, i, dumps(data))
         msg1.to_io(io)
@@ -141,30 +148,50 @@ print ("all passed")
 """
 
 
-def test_io_message(anypython, tmp_path, execmodel):
-    check = tmp_path / "check.py"
-    check.write_text(
-        inspect.getsource(gateway_base)
-        + IO_MESSAGE_EXTRA_SOURCE.format(backend=execmodel.backend)
+@dataclass
+class Checker:
+    python: str
+    path: Path
+    idx: int = 0
+
+    def run_check(
+        self, script: str, *extra_args: str, **process_args: Any
+    ) -> subprocess.CompletedProcess[str]:
+        self.idx += 1
+        check_path = self.path / f"check{self.idx}.py"
+        check_path.write_text(script)
+        return subprocess.run(
+            [self.python, os.fspath(check_path), *extra_args],
+            capture_output=True,
+            text=True,
+            check=True,
+            **process_args,
+        )
+
+
+@pytest.fixture
+def checker(anypython: str, tmp_path: Path) -> Checker:
+    return Checker(python=anypython, path=tmp_path)
+
+
+def test_io_message(checker, execmodel):
+    out = checker.run_check(
+        inspect.getsource(gateway_base) + IO_MESSAGE_EXTRA_SOURCE, execmodel.backend
     )
-    out = subprocess.run([anypython, check], capture_output=True, text=True)
     print(out.stdout)
     assert "all passed" in out.stdout
 
 
-def test_popen_io(anypython, tmpdir, execmodel):
-    check = tmpdir.join("check.py")
-    check.write(
+def test_popen_io(checker, execmodel):
+    out = checker.run_check(
         inspect.getsource(gateway_base)
         + f"""
 io = init_popen_io(get_execmodel({execmodel.backend!r}))
-io.write("hello".encode('ascii'))
+io.write(b"hello")
 s = io.read(1)
-assert s == "x".encode('ascii')
+assert s == b"x"
 """,
-    )
-    out = subprocess.run(
-        [anypython, str(check)], input="x", capture_output=True, text=True
+        input="x",
     )
     print(out.stderr)
     assert "hello" in out.stdout
@@ -185,9 +212,8 @@ def test_popen_io_readloop(monkeypatch, execmodel):
     assert result == b"tes"
 
 
-def test_rinfo_source(anypython, tmpdir):
-    check = tmpdir.join("check.py")
-    check.write(
+def test_rinfo_source(checker):
+    out = checker.run_check(
         f"""
 class Channel:
     def send(self, data):
@@ -198,14 +224,12 @@ print ('all passed')
 """
     )
 
-    out = subprocess.run([anypython, check], capture_output=True, text=True)
     print(out.stdout)
     assert "all passed" in out.stdout
 
 
-def test_geterrortext(anypython, tmpdir):
-    check = tmpdir.join("check.py")
-    check.write(
+def test_geterrortext(checker):
+    out = checker.run_check(
         inspect.getsource(gateway_base)
         + """
 class Arg:
@@ -222,7 +246,6 @@ except ValueError:
     print ("all passed")
     """
     )
-    out = subprocess.run([anypython, check], capture_output=True, text=True)
     print(out.stdout)
     assert "all passed" in out.stdout
 
